@@ -1974,7 +1974,14 @@ fn execute_action(config_path: &Path, action: GuiAction) -> Result<String> {
             }
         }
 
+        // Wait for the socket to appear (helper may take a moment to start).
         let socket = helper_ipc::socket_path();
+        if !socket.exists() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !socket.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
         let request = match action {
             GuiAction::Start => helper_ipc::HelperRequest::Start {
                 config_path: config_path.to_path_buf(),
