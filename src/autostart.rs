@@ -310,6 +310,249 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+// ---------------------------------------------------------------------------
+// macOS privileged helper (LaunchDaemon) management
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+const HELPER_LABEL: &str = "io.linuxdo.accelerator.helper";
+
+#[cfg(target_os = "macos")]
+fn helper_plist_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("/Library/LaunchDaemons").join(format!("{HELPER_LABEL}.plist"))
+}
+
+/// Check whether the privileged helper LaunchDaemon is installed and loaded.
+#[cfg(target_os = "macos")]
+pub fn is_privileged_helper_installed() -> bool {
+    let plist = helper_plist_path();
+    if !plist.exists() {
+        return false;
+    }
+    // Also verify launchd knows about it.
+    std::process::Command::new("launchctl")
+        .args(["list", HELPER_LABEL])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Install the privileged helper LaunchDaemon.  Requires administrator privileges
+/// (triggers a one-time password prompt via osascript).
+#[cfg(target_os = "macos")]
+pub fn install_privileged_helper(exe: &std::path::Path, config_path: &std::path::Path) -> Result<()> {
+    use std::fs;
+
+    let plist_path = helper_plist_path();
+    let exe = absolute_display_path(exe);
+    let config = absolute_display_path(config_path);
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>--config</string>
+        <string>{config}</string>
+        <string>privileged-helper</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Standard</string>
+</dict>
+</plist>
+"#,
+        label = HELPER_LABEL,
+        exe = xml_escape(&exe),
+        config = xml_escape(&config),
+    );
+
+    // Write the plist and load it via an elevated osascript call (one-time prompt).
+    let script = format!(
+        "do shell script \"mkdir -p /Library/LaunchDaemons && cat > {plist_path} <<'PLIST_EOF'\n{plist}\nPLIST_EOF\nlaunchctl unload -w {plist_path} 2>/dev/null; launchctl load -w {plist_path}\" with prompt \"Linux.do Accelerator 需要安装特权辅助进程以实现免密码加速。\" with administrator privileges",
+        plist_path = plist_path.display(),
+        plist = plist,
+    );
+
+    // We need to write the plist content through osascript because the target
+    // directory is root-owned.  Use a temp file approach for reliability.
+    let tmp = std::env::temp_dir().join(format!("{HELPER_LABEL}.plist"));
+    fs::write(&tmp, &plist).context("failed to write temporary plist")?;
+
+    let install_script = format!(
+        "do shell script \"cp '{tmp}' '{dest}' && launchctl unload -w '{dest}' 2>/dev/null; launchctl load -w '{dest}'\" with prompt \"Linux.do Accelerator 需要安装特权辅助进程以实现免密码加速。\" with administrator privileges",
+        tmp = tmp.display(),
+        dest = plist_path.display(),
+    );
+
+    crate::platform::run_command("osascript", &["-e", &install_script])
+        .context("failed to install privileged helper (osascript)")?;
+
+    // Clean up temp file.
+    let _ = fs::remove_file(&tmp);
+
+    // Give launchd a moment to start the helper.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    Ok(())
+}
+
+/// Uninstall the privileged helper LaunchDaemon.
+#[cfg(target_os = "macos")]
+pub fn uninstall_privileged_helper() -> Result<()> {
+    let plist_path = helper_plist_path();
+    if !plist_path.exists() {
+        return Ok(());
+    }
+
+    let script = format!(
+        "do shell script \"launchctl unload -w '{plist}' 2>/dev/null; rm -f '{plist}'\" with prompt \"Linux.do Accelerator 需要卸载特权辅助进程。\" with administrator privileges",
+        plist = plist_path.display(),
+    );
+
+    crate::platform::run_command("osascript", &["-e", &script])
+        .context("failed to uninstall privileged helper")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Linux privileged helper (systemd user service) management
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+const HELPER_SERVICE_NAME: &str = "linuxdo-accelerator-helper";
+
+#[cfg(target_os = "linux")]
+fn helper_service_path() -> Result<PathBuf> {
+    // Use a system-level service so it runs as root without per-user setup.
+    Ok(PathBuf::from("/etc/systemd/system")
+        .join(format!("{HELPER_SERVICE_NAME}.service")))
+}
+
+/// Check whether the privileged helper systemd service is installed and active.
+#[cfg(target_os = "linux")]
+pub fn is_privileged_helper_installed() -> bool {
+    let Ok(path) = helper_service_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", HELPER_SERVICE_NAME])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Install the privileged helper as a systemd service.  Requires root (pkexec).
+#[cfg(target_os = "linux")]
+pub fn install_privileged_helper(exe: &std::path::Path, config_path: &std::path::Path) -> Result<()> {
+    use std::fs;
+
+    let service_path = helper_service_path()?;
+    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+    let config = config_path.canonicalize().unwrap_or_else(|_| config_path.to_path_buf());
+
+    let unit = format!(
+        r#"[Unit]
+Description=Linux.do Accelerator Privileged Helper
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={exe} --config {config} privileged-helper
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"#,
+        exe = exe.display(),
+        config = config.display(),
+    );
+
+    // Write the unit file via pkexec (one-time root prompt).
+    let tmp = std::env::temp_dir().join(format!("{HELPER_SERVICE_NAME}.service"));
+    fs::write(&tmp, &unit).context("failed to write temporary service file")?;
+
+    let dest = service_path.display();
+    let status = std::process::Command::new("pkexec")
+        .args([
+            "bash",
+            "-c",
+            &format!(
+                "cp '{tmp}' '{dest}' && systemctl daemon-reload && systemctl enable --now '{name}'",
+                tmp = tmp.display(),
+                dest = dest,
+                name = HELPER_SERVICE_NAME,
+            ),
+        ])
+        .status()
+        .context("failed to execute pkexec")?;
+
+    let _ = fs::remove_file(&tmp);
+
+    if !status.success() {
+        bail!("pkexec rejected the request or systemctl failed");
+    }
+
+    // Give systemd a moment to start the helper.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    Ok(())
+}
+
+/// Uninstall the privileged helper systemd service.
+#[cfg(target_os = "linux")]
+pub fn uninstall_privileged_helper() -> Result<()> {
+    let Ok(path) = helper_service_path() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let status = std::process::Command::new("pkexec")
+        .args([
+            "bash",
+            "-c",
+            &format!(
+                "systemctl disable --now '{name}' 2>/dev/null; rm -f '{path}' && systemctl daemon-reload",
+                name = HELPER_SERVICE_NAME,
+                path = path.display(),
+            ),
+        ])
+        .status()
+        .context("failed to execute pkexec")?;
+
+    if !status.success() {
+        bail!("pkexec rejected the request or systemctl failed");
+    }
+    Ok(())
+}
+
+// Non-Unix stubs (Windows, Android, etc.)
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn is_privileged_helper_installed() -> bool {
+    false
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn install_privileged_helper(_exe: &std::path::Path, _config_path: &std::path::Path) -> Result<()> {
+    bail!("privileged helper is not supported on this platform")
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn uninstall_privileged_helper() -> Result<()> {
+    bail!("privileged helper is not supported on this platform")
+}
+
 #[cfg(target_os = "linux")]
 fn platform_enable(exe: &Path, config_path: &Path) -> Result<()> {
     use std::fs;

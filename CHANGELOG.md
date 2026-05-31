@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.15
+
+- 新增 `idcflare.com` 及其子域的支持，与 `linux.do` 统一纳入代理、hosts 和证书管理范围。
+- macOS / Linux 新增特权辅助守护进程：首次安装时输入一次密码（macOS LaunchDaemon / Linux systemd service），之后"开始加速/停止加速"不再需要密码。辅助进程通过 Unix domain socket 与 GUI 通信；socket 连接失败时自动回退到原有的提权方式。
+
 ## v0.1.14
 
 - 修复 Windows 上前端仍在运行时被误判为“前端异常退出”的问题；守护进程现在仅在 UI lease 真正过期或持续缺失后才自动停止。

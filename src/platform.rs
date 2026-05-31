@@ -889,7 +889,7 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<()> {
     Ok(())
 }
 
-fn run_command(command: &str, args: &[&str]) -> Result<()> {
+pub fn run_command(command: &str, args: &[&str]) -> Result<()> {
     let mut child = Command::new(command);
     child.args(args);
     configure_hidden_windows_command(&mut child);

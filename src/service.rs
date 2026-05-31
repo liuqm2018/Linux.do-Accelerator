@@ -259,6 +259,76 @@ pub fn helper_stop(config_path: Option<PathBuf>) -> Result<()> {
     result
 }
 
+/// Run the privileged helper daemon that listens on a Unix domain socket.
+/// This runs as root (via LaunchDaemon) and handles start/stop/status commands
+/// from the GUI without requiring a password each time.
+#[cfg(unix)]
+pub fn run_privileged_helper(config_path: Option<PathBuf>) -> Result<()> {
+    use crate::helper_ipc::{self, HelperRequest, HelperResponse};
+
+    let paths = resolve_paths(config_path.clone())?;
+    log_info(
+        &paths,
+        "privileged-helper",
+        "特权辅助守护进程启动，开始监听 socket",
+    );
+
+    let socket = helper_ipc::socket_path();
+    let config_path = paths.config_path.clone();
+
+    helper_ipc::run_server(&socket, |request| match request {
+        HelperRequest::Start { config_path } => {
+            let resp = match helper_start(Some(config_path.clone())) {
+                Ok(()) => HelperResponse {
+                    success: true,
+                    message: "加速服务已启动".to_string(),
+                    status: None,
+                },
+                Err(e) => HelperResponse {
+                    success: false,
+                    message: format!("{e:#}"),
+                    status: None,
+                },
+            };
+            resp
+        }
+        HelperRequest::Stop { config_path } => {
+            let resp = match helper_stop(Some(config_path.clone())) {
+                Ok(()) => HelperResponse {
+                    success: true,
+                    message: "加速服务已停止".to_string(),
+                    status: None,
+                },
+                Err(e) => HelperResponse {
+                    success: false,
+                    message: format!("{e:#}"),
+                    status: None,
+                },
+            };
+            resp
+        }
+        HelperRequest::Status { config_path } => {
+            let resp = match status(Some(config_path.clone())) {
+                Ok(s) => HelperResponse {
+                    success: true,
+                    message: "ok".to_string(),
+                    status: Some(s),
+                },
+                Err(e) => HelperResponse {
+                    success: false,
+                    message: format!("{e:#}"),
+                    status: None,
+                },
+            };
+            resp
+        }
+    })?;
+
+    // Cleanup socket on exit.
+    let _ = std::fs::remove_file(&socket);
+    Ok(())
+}
+
 pub fn cleanup(config_path: Option<PathBuf>) -> Result<()> {
     let paths = resolve_paths(config_path)?;
     log_info(&paths, "cleanup", "收到彻底恢复请求，开始恢复系统修改");

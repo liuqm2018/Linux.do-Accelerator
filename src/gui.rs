@@ -1954,47 +1954,111 @@ fn execute_action(config_path: &Path, action: GuiAction) -> Result<String> {
             "GUI 已发起管理员操作请求",
         );
     }
-    let cli_binary = locate_action_binary()?;
-    let args = vec![
-        "--config".to_string(),
-        config_path.to_string_lossy().into_owned(),
-        action.subcommand().to_string(),
-    ];
-    if let Err(error) = run_elevated(&cli_binary, &args) {
-        if let Ok(status) = service::status(Some(config_path.to_path_buf())) {
-            if let Some(last_error) = status.last_error.clone() {
+
+    // On macOS and Linux, try the privileged helper first (no password needed after initial install).
+    #[cfg(unix)]
+    {
+        use crate::autostart;
+        use crate::helper_ipc;
+
+        let cli_binary = locate_action_binary()?;
+        if !autostart::is_privileged_helper_installed() {
+            autostart::install_privileged_helper(&cli_binary, config_path)
+                .context("failed to install privileged helper")?;
+        }
+
+        let socket = helper_ipc::socket_path();
+        let request = match action {
+            GuiAction::Start => helper_ipc::HelperRequest::Start {
+                config_path: config_path.to_path_buf(),
+            },
+            GuiAction::Stop => helper_ipc::HelperRequest::Stop {
+                config_path: config_path.to_path_buf(),
+            },
+        };
+
+        match helper_ipc::send_request(&socket, &request) {
+            Ok(resp) if resp.success => {
+                // Fall through to the polling loop below.
+            }
+            Ok(resp) => {
                 if let Ok(paths) = service::resolve_paths(Some(config_path.to_path_buf())) {
                     let _ = append_runtime_log(
                         &paths,
                         "ERROR",
                         action.subcommand(),
-                        &format!("GUI 操作失败：{last_error}"),
+                        &format!("helper 操作失败：{}", resp.message),
                     );
                 }
-                return Err(Error::msg(last_error)).with_context(|| action.error_context());
+                bail!("{}", resp.message);
             }
-            if !matches!(action, GuiAction::Start) && service_state_changed(&before_status, &status)
-            {
+            Err(error) => {
+                // Socket communication failed — fall back to platform elevation.
                 if let Ok(paths) = service::resolve_paths(Some(config_path.to_path_buf())) {
                     let _ = append_runtime_log(
                         &paths,
                         "WARN",
                         action.subcommand(),
-                        &format!("GUI 检测到状态已变化：{}", status.status_text),
+                        &format!("helper socket 连接失败，回退到提权：{error}"),
                     );
                 }
-                return Err(Error::msg(status.status_text)).with_context(|| action.error_context());
+                let args = vec![
+                    "--config".to_string(),
+                    config_path.to_string_lossy().into_owned(),
+                    action.subcommand().to_string(),
+                ];
+                run_elevated(&cli_binary, &args)?;
             }
         }
-        if let Ok(paths) = service::resolve_paths(Some(config_path.to_path_buf())) {
-            let _ = append_runtime_log(
-                &paths,
-                "ERROR",
-                action.subcommand(),
-                &format!("GUI 提权执行失败：{error}"),
-            );
+    }
+
+    // Non-Unix (Windows): use the existing elevation path.
+    #[cfg(not(unix))]
+    {
+        let cli_binary = locate_action_binary()?;
+        let args = vec![
+            "--config".to_string(),
+            config_path.to_string_lossy().into_owned(),
+            action.subcommand().to_string(),
+        ];
+        if let Err(error) = run_elevated(&cli_binary, &args) {
+            if let Ok(status) = service::status(Some(config_path.to_path_buf())) {
+                if let Some(last_error) = status.last_error.clone() {
+                    if let Ok(paths) = service::resolve_paths(Some(config_path.to_path_buf())) {
+                        let _ = append_runtime_log(
+                            &paths,
+                            "ERROR",
+                            action.subcommand(),
+                            &format!("GUI 操作失败：{last_error}"),
+                        );
+                    }
+                    return Err(Error::msg(last_error)).with_context(|| action.error_context());
+                }
+                if !matches!(action, GuiAction::Start)
+                    && service_state_changed(&before_status, &status)
+                {
+                    if let Ok(paths) = service::resolve_paths(Some(config_path.to_path_buf())) {
+                        let _ = append_runtime_log(
+                            &paths,
+                            "WARN",
+                            action.subcommand(),
+                            &format!("GUI 检测到状态已变化：{}", status.status_text),
+                        );
+                    }
+                    return Err(Error::msg(status.status_text))
+                        .with_context(|| action.error_context());
+                }
+            }
+            if let Ok(paths) = service::resolve_paths(Some(config_path.to_path_buf())) {
+                let _ = append_runtime_log(
+                    &paths,
+                    "ERROR",
+                    action.subcommand(),
+                    &format!("GUI 提权执行失败：{error}"),
+                );
+            }
+            return Err(error).with_context(|| action.error_context());
         }
-        return Err(error).with_context(|| action.error_context());
     }
 
     let deadline = Instant::now() + Duration::from_secs(12);

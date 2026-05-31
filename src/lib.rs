@@ -4,6 +4,8 @@ pub mod branding;
 pub mod certs;
 pub mod cli;
 pub mod config;
+#[cfg(unix)]
+pub mod helper_ipc;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod gui;
 pub mod hosts;

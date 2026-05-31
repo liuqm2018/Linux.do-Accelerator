@@ -52,6 +52,8 @@ pub enum Command {
     #[command(hide = true)]
     Daemon,
     #[command(hide = true)]
+    PrivilegedHelper,
+    #[command(hide = true)]
     TrayShell,
 }
 
@@ -136,6 +138,12 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Daemon) => {
             run_async(service::run_foreground(cli.config, false))?;
+        }
+        Some(Command::PrivilegedHelper) => {
+            #[cfg(unix)]
+            service::run_privileged_helper(cli.config)?;
+            #[cfg(not(unix))]
+            anyhow::bail!("privileged-helper is only supported on Unix");
         }
         Some(Command::TrayShell) => {
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
