@@ -2,12 +2,12 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 #[cfg(target_family = "unix")]
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use tokio::sync::watch;
 
 use crate::certs::{ensure_bundle, load_bundle};
@@ -26,6 +26,8 @@ use crate::platform::{
 use crate::proxy::run_proxy;
 use crate::runtime_log;
 use crate::state;
+#[cfg(unix)]
+use crate::helper_ipc::HelperResponse;
 
 pub fn resolve_paths(config_override: Option<PathBuf>) -> Result<AppPaths> {
     let paths = AppPaths::resolve(config_override)?;
@@ -267,9 +269,7 @@ pub fn helper_stop(config_path: Option<PathBuf>) -> Result<()> {
 /// spawned, which avoids zombie-process issues entirely.
 #[cfg(unix)]
 pub fn run_privileged_helper(config_path: Option<PathBuf>) -> Result<()> {
-    use std::sync::Mutex;
-
-    use crate::helper_ipc::{self, HelperRequest, HelperResponse};
+    use crate::helper_ipc::{self, HelperRequest};
 
     let paths = resolve_paths(config_path.clone())?;
     log_info(
@@ -306,8 +306,6 @@ fn handle_helper_start(
     config_path: &std::path::Path,
     proxy_state: &Arc<Mutex<Option<ProxyHandle>>>,
 ) -> HelperResponse {
-    use crate::helper_ipc::HelperResponse;
-
     let config_path = config_path.to_path_buf();
 
     // If proxy is already running, stop it first.
@@ -392,7 +390,6 @@ fn handle_helper_stop(
     config_path: &std::path::Path,
     proxy_state: &Arc<Mutex<Option<ProxyHandle>>>,
 ) -> HelperResponse {
-    use crate::helper_ipc::HelperResponse;
 
     let config_path = config_path.to_path_buf();
 
@@ -447,7 +444,6 @@ fn handle_helper_status(
     config_path: &std::path::Path,
     proxy_state: &Arc<Mutex<Option<ProxyHandle>>>,
 ) -> HelperResponse {
-    use crate::helper_ipc::HelperResponse;
 
     match status(Some(config_path.to_path_buf())) {
         Ok(s) => HelperResponse {
