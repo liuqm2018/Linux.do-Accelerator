@@ -75,6 +75,7 @@ jobs:
           echo "RELEASE_VERSION=${edge_version}" >> "${GITHUB_ENV}"
           echo "LINUXDO_BUILD_VERSION=${edge_version}" >> "${GITHUB_ENV}"
           echo "LINUXDO_GIT_HASH=${short_sha}" >> "${GITHUB_ENV}"
+          echo "asset_hash=${short_sha}" >> "${GITHUB_OUTPUT}"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -129,7 +130,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linuxdo-accelerator-${{ steps.sync_version.outputs.package_version }}-${{ matrix.artifact_name }}
+          name: linuxdo-accelerator-${{ steps.sync_version.outputs.asset_hash }}-${{ matrix.artifact_name }}
           path: |
             dist/**
             target/release/linuxdo-accelerator*
@@ -180,6 +181,7 @@ jobs:
           echo "RELEASE_VERSION=${edge_version}" >> "${GITHUB_ENV}"
           echo "LINUXDO_BUILD_VERSION=${edge_version}" >> "${GITHUB_ENV}"
           echo "LINUXDO_GIT_HASH=${short_sha}" >> "${GITHUB_ENV}"
+          echo "asset_hash=${short_sha}" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/setup-java@v4
         with:
@@ -225,7 +227,7 @@ jobs:
           ANDROID_ABI: ${{ matrix.abi }}
           RUST_TARGET: ${{ matrix.rust_target }}
           ANDROID_BUILD_TYPE: release
-          APK_OUTPUT_NAME: linuxdo-accelerator-${{ steps.sync_version.outputs.package_version }}-android-${{ matrix.abi }}.apk
+          APK_OUTPUT_NAME: linuxdo-accelerator-${{ steps.sync_version.outputs.asset_hash }}-android-${{ matrix.abi }}.apk
         run: |
           export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/27.2.12479018"
           ./scripts/build-android-apk.sh
@@ -233,7 +235,7 @@ jobs:
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linuxdo-accelerator-${{ steps.sync_version.outputs.package_version }}-${{ matrix.artifact_name }}
+          name: linuxdo-accelerator-${{ steps.sync_version.outputs.asset_hash }}-${{ matrix.artifact_name }}
           path: |
             android/dist/*.apk
 
@@ -273,7 +275,7 @@ jobs:
 
           git push -f origin "${GITHUB_SHA}:refs/tags/${EDGE_TAG}"
 
-          short_sha="$(git rev-parse --short "${GITHUB_SHA}")"
+          short_sha="${GITHUB_SHA::12}"
           notes_file="$(mktemp)"
           cat > "${notes_file}" <<EOF
           Auto-updated from main.
@@ -281,9 +283,24 @@ jobs:
           Commit: ${short_sha}
           Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           EOF
-          mapfile -t release_files < <(
-            find release-artifacts -type f \( -path '*/dist/*' -o -name '*.apk' \) | sort
+          asset_hash="${GITHUB_SHA::12}"
+          release_assets_dir="$(mktemp -d)"
+          while IFS= read -r -d '' file; do
+            rel_path="${file#release-artifacts/}"
+            artifact_dir="${rel_path%%/*}"
+            platform="${artifact_dir#linuxdo-accelerator-${asset_hash}-}"
+            case "${file}" in
+              *.tar.gz) ext="tar.gz" ;;
+              *.AppImage) ext="AppImage" ;;
+              *) ext="${file##*.}" ;;
+            esac
+            cp "${file}" "${release_assets_dir}/linuxdo-accelerator-${asset_hash}-${platform}.${ext}"
+          done < <(
+            find release-artifacts -type f \
+              \( -name '*.apk' -o -name '*.deb' -o -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.AppImage' \) \
+              -print0 | sort -z
           )
+          mapfile -t release_files < <(find "${release_assets_dir}" -type f | sort)
           if [[ "${#release_files[@]}" -eq 0 ]]; then
             echo "no release files found" >&2
             exit 1
