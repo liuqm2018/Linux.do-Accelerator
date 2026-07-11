@@ -24,7 +24,8 @@ final class DohResolver {
     private let rawEndpoints: [String]
     private var cache: [String: CacheEntry] = [:]
     private let cacheLock = NSLock()
-    private let session: URLSession
+    // Not private: accessed by the query methods in DohResolver+Query.swift.
+    let session: URLSession
 
     init(config: LinuxdoConfig) {
         self.config = config
