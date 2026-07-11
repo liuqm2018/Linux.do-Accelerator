@@ -11,7 +11,6 @@
 
 use std::ffi::{CStr, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::thread::JoinHandle;
 
 use tokio::sync::watch;

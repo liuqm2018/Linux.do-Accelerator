@@ -132,8 +132,8 @@ fn write_response(mut stream: &UnixStream, response: &HelperResponse) -> Result<
 /// Get the peer UID of a Unix domain socket connection.
 #[cfg(unix)]
 fn peer_cred(stream: &UnixStream) -> Result<u32> {
-    // macOS uses LOCAL_PEERCRED, Linux uses SO_PEERCRED.
-    #[cfg(target_os = "macos")]
+    // Darwin (macOS/iOS) uses LOCAL_PEERCRED, Linux uses SO_PEERCRED.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         use std::os::unix::io::AsRawFd;
         let fd = stream.as_raw_fd();
@@ -153,7 +153,7 @@ fn peer_cred(stream: &UnixStream) -> Result<u32> {
         }
         Ok(cred.cr_uid)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
         use std::os::unix::io::AsRawFd;
         let fd = stream.as_raw_fd();
