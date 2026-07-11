@@ -7,7 +7,7 @@
 
   <p>
     <img alt="Rust" src="https://img.shields.io/badge/Rust-Native-orange?style=flat-square" />
-    <img alt="Platforms" src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-1f6feb?style=flat-square" />
+    <img alt="Platforms" src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android%20%7C%20iOS-1f6feb?style=flat-square" />
     <img alt="Package" src="https://img.shields.io/badge/Package-EXE%20%7C%20DEB%20%7C%20DMG%20%7C%20APK-2da44e?style=flat-square" />
     <img alt="Mode" src="https://img.shields.io/badge/Mode-CLI%20%2B%20Desktop%20%2B%20Android-6f42c1?style=flat-square" />
     
@@ -96,6 +96,17 @@ Android 版目前走的是 DNS 代理接管方案：
 - 推荐使用 Chrome、Edge 这类支持 `ECH / HTTPS RR` 的浏览器
 - 系统自带浏览器和 WebView 不一定支持 `ECH`，在部分设备上可能仍会超时
 - 后续可能继续提供 Root 版，配合系统证书安装改善系统浏览器和 WebView 兼容性
+
+## iOS
+
+iOS 版走 Network Extension（`NEPacketTunnelProvider`）的 DNS 接管方案，思路与 Android 一致：
+
+- 只把 `linux.do / idcflare.com` 的 DNS 查询引入本地隧道，走私人 DoH 取 ECH 记录
+- 其它域名和所有真实流量直连，不进隧道
+- iOS 17+ Safari 原生支持 ECH
+
+由于 Network Extension 需要特殊 entitlement，免费账号 / 普通侧载拿不到，iOS 版打包为
+**未签名 IPA**，需用 **TrollStore**（或自签环境）安装。详见 [`ios/README.md`](./ios/README.md)。
 
 ## GUI
 
