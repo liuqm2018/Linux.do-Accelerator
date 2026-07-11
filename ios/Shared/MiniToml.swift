@@ -38,10 +38,9 @@ enum MiniToml {
         var statements: [String] = []
         var current = ""
         var depth = 0
-        var inString = false
 
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = stripComment(String(rawLine), inString: &inString)
+            let line = stripComment(String(rawLine))
             for ch in line {
                 if ch == "[" || ch == "{" { depth += 1 }
                 if ch == "]" || ch == "}" { depth = max(0, depth - 1) }
@@ -62,9 +61,9 @@ enum MiniToml {
         return statements
     }
 
-    /// Removes `#` comments outside of quoted strings.
-    private static func stripComment(_ line: String, inString: Bool) -> String {
-        var localInString = inString
+    /// Removes `#` comments outside of quoted strings (single-line).
+    private static func stripComment(_ line: String) -> String {
+        var localInString = false
         var output = ""
         var previous: Character = " "
         for ch in line {

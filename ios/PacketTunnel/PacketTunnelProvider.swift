@@ -47,7 +47,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         running = false
-        os_log("tunnel stopping, reason=%d", log: log, type: .info, reason.rawValue)
+        os_log("tunnel stopping, reason=%{public}@", log: log, type: .info, "\(reason.rawValue)")
         completionHandler()
     }
 
@@ -122,8 +122,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         do {
             return try resolver.resolveManagedPayload(requestPayload: request.payload, query: query)
         } catch {
-            os_log("DoH resolve failed for %{public}@ type=%d: %{public}@",
-                   log: log, type: .error, query.name, query.type, "\(error)")
+            os_log("DoH resolve failed for %{public}@ type=%{public}@: %{public}@",
+                   log: log, type: .error, query.name, "\(query.type)", "\(error)")
             return DnsPacketCodec.buildResponse(query: query, resolution: DnsResolution(answers: [], responseCode: 2))
         }
     }
