@@ -23,6 +23,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         config = ConfigStore.load()
         resolver = DohResolver(config: config)
 
+        // Phase 2a probe: prove the Rust core links and runs on-device by
+        // generating/exporting the CA. Does not change DNS behaviour yet.
+        if let der = RustCore.exportCaDer() {
+            os_log("rust core OK: CA DER %d bytes", log: log, type: .info, der.count)
+        } else {
+            os_log("rust core probe FAILED (export_ca_der returned nil)", log: log, type: .error)
+        }
+
         guard !config.dohEndpoints.isEmpty else {
             os_log("no DoH endpoints configured", log: log, type: .error)
             completionHandler(NSError(domain: "io.linuxdo.accelerator", code: 1,

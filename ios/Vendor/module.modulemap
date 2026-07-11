@@ -1,0 +1,4 @@
+module LinuxdoCore {
+    header "linuxdo_core.h"
+    export *
+}

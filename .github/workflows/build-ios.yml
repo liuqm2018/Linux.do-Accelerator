@@ -41,6 +41,12 @@ jobs:
           echo "=== exported FFI symbols ==="
           nm target/aarch64-apple-ios/release/liblinuxdo_accelerator.a 2>/dev/null | grep -i linuxdo_proxy || true
 
+      - name: Stage static lib for Xcode
+        run: |
+          set -euo pipefail
+          cp target/aarch64-apple-ios/release/liblinuxdo_accelerator.a ios/Vendor/
+          ls -lh ios/Vendor/
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

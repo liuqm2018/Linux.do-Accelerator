@@ -33,9 +33,18 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/LinuxdoAccelerator.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Link the Rust core here too (RustCore.swift lives in Shared/, and the
+        # app needs export_ca_der for the cert-install flow).
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Vendor
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/Vendor
+        OTHER_LDFLAGS: -llinuxdo_accelerator -lc++ -lresolv -framework Security -framework SystemConfiguration
     dependencies:
       - target: PacketTunnel
         embed: true
+      - sdk: libc++.tbd
+      - sdk: libresolv.tbd
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
 
   PacketTunnel:
     type: app-extension
@@ -48,3 +57,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.linuxdo.accelerator.PacketTunnel
         INFOPLIST_FILE: PacketTunnel/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnel/PacketTunnel.entitlements
+        # Link the Rust ECH core (liblinuxdo_accelerator.a, built by CI).
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/Vendor
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/Vendor
+        OTHER_LDFLAGS: -llinuxdo_accelerator -lc++ -lresolv -framework Security -framework SystemConfiguration
+    dependencies:
+      - sdk: libc++.tbd
+      - sdk: libresolv.tbd
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
