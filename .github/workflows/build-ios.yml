@@ -19,6 +19,28 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
 
+      # --- Phase 1: prove the Rust ECH core cross-compiles to iOS ---
+      - name: Install Rust iOS target
+        run: |
+          rustup target add aarch64-apple-ios
+          rustc --version
+
+      - name: Ensure CMake (aws-lc-rs build dependency)
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
+          cmake --version
+
+      - name: Build Rust static lib for aarch64-apple-ios
+        env:
+          LINUXDO_GIT_HASH: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cargo build --release --lib --target aarch64-apple-ios
+          echo "=== produced static lib ==="
+          ls -lh target/aarch64-apple-ios/release/liblinuxdo_accelerator.a
+          echo "=== exported FFI symbols ==="
+          nm target/aarch64-apple-ios/release/liblinuxdo_accelerator.a 2>/dev/null | grep -i linuxdo_proxy || true
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

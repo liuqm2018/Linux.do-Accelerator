@@ -28,6 +28,70 @@ pub fn ensure_bundle(config: &AppConfig, root: &Path) -> Result<CertificateBundl
     generate_bundle(config, root)
 }
 
+/// Returns the root CA certificate as DER bytes, for installing/trusting on a
+/// device (iOS wants DER for `.mobileconfig` / trust settings). Ensures the
+/// bundle exists first, then reads the PEM CA back and re-encodes to DER.
+pub fn export_ca_der(config: &AppConfig, root: &Path) -> Result<Vec<u8>> {
+    let bundle = ensure_bundle(config, root)?;
+    let pem = fs::read_to_string(&bundle.ca_cert_path)
+        .with_context(|| format!("failed to read {}", bundle.ca_cert_path.display()))?;
+    let der = pem_to_der(&pem).context("failed to decode CA PEM to DER")?;
+    Ok(der)
+}
+
+/// Minimal PEM (single CERTIFICATE block) → DER decoder, no extra deps.
+fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
+    let mut base64 = String::new();
+    let mut in_body = false;
+    for line in pem.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("-----BEGIN") {
+            in_body = true;
+            continue;
+        }
+        if trimmed.starts_with("-----END") {
+            break;
+        }
+        if in_body {
+            base64.push_str(trimmed);
+        }
+    }
+    if base64.is_empty() {
+        bail!("no PEM body found");
+    }
+    base64_decode(&base64)
+}
+
+/// Standard base64 decoder (RFC 4648), tolerating whitespace and padding.
+fn base64_decode(input: &str) -> Result<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for &c in input.as_bytes() {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        let v = val(c).ok_or_else(|| anyhow!("invalid base64 character"))?;
+        buffer = (buffer << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Ok(out)
+}
+
 pub fn load_bundle(root: &Path) -> Result<CertificateBundle> {
     let bundle = bundle_paths(root);
     if !bundle_all_exist(&bundle) {

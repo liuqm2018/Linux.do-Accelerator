@@ -1,0 +1,170 @@
+//! C ABI over the ECH proxy core, for the iOS Network Extension.
+//!
+//! The extension links this static library and calls:
+//!   - `linuxdo_proxy_start(config_toml, home_dir)` → opaque handle
+//!   - `linuxdo_proxy_stop(handle)`
+//!   - `linuxdo_export_ca_der(home_dir, out_len)` → malloc'd DER buffer
+//!   - `linuxdo_free_bytes(ptr, len)` to release that buffer
+//!
+//! All entry points are `#[cfg(target_os = "ios")]`. Everything runs inside the
+//! extension process; there is no fork/exec and no system-trust modification.
+
+use std::ffi::{CStr, c_char};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
+use std::thread::JoinHandle;
+
+use tokio::sync::watch;
+
+use crate::certs;
+use crate::config::AppConfig;
+use crate::paths::AppPaths;
+use crate::proxy;
+
+/// Opaque handle returned to Swift. Owns the shutdown channel and the runtime
+/// thread. Freed by `linuxdo_proxy_stop`.
+pub struct ProxyHandle {
+    shutdown_tx: watch::Sender<bool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+fn cstr_to_string(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .ok()
+        .map(|s| s.to_owned())
+}
+
+/// Builds config + paths + cert bundle, then spawns a single-threaded tokio
+/// runtime running `run_proxy` until shutdown. Returns null on failure.
+fn start_inner(config_toml: Option<String>, home_dir: String) -> Option<Box<ProxyHandle>> {
+    // Point AppPaths at the container the extension gave us.
+    unsafe { std::env::set_var("LINUXDO_IOS_HOME", &home_dir) };
+
+    let config: AppConfig = match config_toml {
+        Some(text) => toml::from_str(&text).unwrap_or_default(),
+        None => AppConfig::default(),
+    };
+
+    let paths = AppPaths::resolve(None).ok()?;
+    paths.ensure_layout().ok()?;
+    let bundle = certs::ensure_bundle(&config, &paths.cert_dir).ok()?;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let thread = std::thread::Builder::new()
+        .name("linuxdo-ios-proxy".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            let _ = runtime.block_on(proxy::run_proxy(config, paths, bundle, shutdown_rx));
+        })
+        .ok()?;
+
+    Some(Box::new(ProxyHandle {
+        shutdown_tx,
+        thread: Some(thread),
+    }))
+}
+
+/// Starts the proxy. `config_toml` may be null (uses defaults). `home_dir` is
+/// the writable container path. Returns an opaque handle or null on error.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_proxy_start(
+    config_toml: *const c_char,
+    home_dir: *const c_char,
+) -> *mut ProxyHandle {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let home = cstr_to_string(home_dir)?;
+        start_inner(cstr_to_string(config_toml), home)
+    }));
+    match result {
+        Ok(Some(handle)) => Box::into_raw(handle),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Signals shutdown and joins the runtime thread. Consumes the handle.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_proxy_stop(handle: *mut ProxyHandle) {
+    if handle.is_null() {
+        return;
+    }
+    let mut boxed = unsafe { Box::from_raw(handle) };
+    let _ = boxed.shutdown_tx.send(true);
+    if let Some(thread) = boxed.thread.take() {
+        let _ = thread.join();
+    }
+}
+
+/// Writes the CA DER bytes into a freshly allocated buffer; sets `*out_len` and
+/// returns the pointer (free with `linuxdo_free_bytes`). Returns null on error.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_export_ca_der(
+    config_toml: *const c_char,
+    home_dir: *const c_char,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let home = cstr_to_string(home_dir)?;
+        unsafe { std::env::set_var("LINUXDO_IOS_HOME", &home) };
+        let config: AppConfig = match cstr_to_string(config_toml) {
+            Some(text) => toml::from_str(&text).unwrap_or_default(),
+            None => AppConfig::default(),
+        };
+        let paths = AppPaths::resolve(None).ok()?;
+        paths.ensure_layout().ok()?;
+        certs::export_ca_der(&config, &paths.cert_dir).ok()
+    }));
+
+    match result {
+        Ok(Some(mut der)) => {
+            der.shrink_to_fit();
+            let len = der.len();
+            let ptr = der.as_mut_ptr();
+            std::mem::forget(der);
+            if !out_len.is_null() {
+                unsafe { *out_len = len };
+            }
+            ptr
+        }
+        _ => {
+            if !out_len.is_null() {
+                unsafe { *out_len = 0 };
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Frees a buffer returned by `linuxdo_export_ca_der`.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_free_bytes(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        let _ = Vec::from_raw_parts(ptr, len, len);
+    }
+}
+
+// Silence dead-code warnings for helpers on non-iOS builds where the exported
+// entry points are compiled out.
+#[cfg(not(target_os = "ios"))]
+#[allow(dead_code)]
+fn _keep_used() {
+    let _ = start_inner as fn(Option<String>, String) -> Option<Box<ProxyHandle>>;
+    let _ = cstr_to_string as fn(*const c_char) -> Option<String>;
+}

@@ -7,6 +7,11 @@ authors = ["fjh1997 <549308442@qq.com>"]
 license = "MIT"
 description = "Native Rust linux.do accelerator with CLI and desktop shell"
 
+# staticlib: linked into the iOS Network Extension. rlib: the desktop bin.
+[lib]
+name = "linuxdo_accelerator"
+crate-type = ["staticlib", "rlib"]
+
 [package.metadata.packager]
 product-name = "Linux.do Accelerator"
 identifier = "io.linuxdo.accelerator"

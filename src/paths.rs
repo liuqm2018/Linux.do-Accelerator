@@ -94,6 +94,17 @@ impl AppPaths {
 }
 
 fn default_app_dirs() -> Result<(PathBuf, PathBuf)> {
+    #[cfg(target_os = "ios")]
+    {
+        // On iOS the sandbox/app-group container is only known at runtime, so
+        // the Network Extension passes it in via LINUXDO_IOS_HOME. Everything
+        // lives under that single writable root.
+        let root = std::env::var_os("LINUXDO_IOS_HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("LINUXDO_IOS_HOME not set (iOS container dir)"))?;
+        return Ok((root.join("config"), root.join("data")));
+    }
+
     #[cfg(target_os = "android")]
     {
         let root = PathBuf::from("/data/local/tmp/linuxdo-accelerator");
