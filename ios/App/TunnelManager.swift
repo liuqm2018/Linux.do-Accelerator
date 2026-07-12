@@ -61,31 +61,32 @@ final class TunnelManager: ObservableObject {
 
     /// Asks the running extension for the CA DER over IPC. Reports a specific
     /// reason on failure so problems are diagnosable.
-    func fetchCaDer(completion: @escaping (Result<Data, String>) -> Void) {
+    /// Calls back with (der, nil) on success or (nil, reason) on failure.
+    func fetchCaDer(completion: @escaping (Data?, String?) -> Void) {
         guard let connection = manager?.connection else {
-            completion(.failure("无 VPN 连接对象（manager 未就绪）")); return
+            completion(nil, "无 VPN 连接对象（manager 未就绪）"); return
         }
         guard let session = connection as? NETunnelProviderSession else {
-            completion(.failure("连接不是 NETunnelProviderSession")); return
+            completion(nil, "连接不是 NETunnelProviderSession"); return
         }
         // Use the live connection status, not our cached copy.
         let live = connection.status
         guard live == .connected else {
-            completion(.failure("隧道未连接（状态=\(live.rawValue)）")); return
+            completion(nil, "隧道未连接（状态=\(live.rawValue)）"); return
         }
         let message = Data("export-ca".utf8)
         do {
             try session.sendProviderMessage(message) { response in
                 DispatchQueue.main.async {
                     if let response = response, !response.isEmpty {
-                        completion(.success(response))
+                        completion(response, nil)
                     } else {
-                        completion(.failure("扩展返回空（证书导出失败）"))
+                        completion(nil, "扩展返回空（证书导出失败）")
                     }
                 }
             }
         } catch {
-            completion(.failure("sendProviderMessage 抛错：\(error.localizedDescription)"))
+            completion(nil, "sendProviderMessage 抛错：\(error.localizedDescription)")
         }
     }
 
