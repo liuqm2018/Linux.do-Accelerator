@@ -73,23 +73,20 @@ struct ContentView: View {
             Text("加速依赖本地 HTTPS 接管，需安装并信任根证书（一次性）。")
                 .font(.footnote).foregroundColor(.secondary)
             Button {
-                guard tunnel.status.isRunning else {
-                    certMessage = "请先「开始加速」，证书由加速服务提供。"
+                // Generate/read the CA in the app's own home (no tunnel needed,
+                // no App Group, no IPC). The same bundle is handed to the
+                // extension via providerConfiguration when加速 starts.
+                certMessage = "正在生成证书…"
+                guard let export = RustCore.exportBundle() else {
+                    certMessage = "生成证书失败：\(RustCore.lastError() ?? "未知原因")"
                     return
                 }
-                certMessage = "正在从加速服务获取证书…"
-                tunnel.fetchCaDer { der, reason in
-                    guard let der = der else {
-                        certMessage = "获取证书失败：\(reason ?? "未知原因")"
-                        return
-                    }
-                    certInstaller.installCA(caDer: der) { installResult in
-                        switch installResult {
-                        case .success:
-                            certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
-                        case .failure(let error):
-                            certMessage = "安装失败：\(error.localizedDescription)"
-                        }
+                certInstaller.installCA(caDer: export.caDer) { installResult in
+                    switch installResult {
+                    case .success:
+                        certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
+                    case .failure(let error):
+                        certMessage = "安装失败：\(error.localizedDescription)"
                     }
                 }
             } label: {

@@ -28,6 +28,21 @@ ProxyHandle *linuxdo_proxy_start(const char *config_toml, const char *home_dir);
 void linuxdo_proxy_stop(ProxyHandle *handle);
 
 /*
+ * Starts the proxy using caller-provided cert PEMs (from the app via
+ * providerConfiguration) instead of generating them. Returns NULL on error.
+ */
+ProxyHandle *linuxdo_proxy_start_with_certs(const char *config_toml, const char *home_dir,
+                                            const char *ca_pem, const char *server_cert_pem,
+                                            const char *server_key_pem);
+
+/*
+ * Ensures the bundle and returns a C string with three sentinel-delimited
+ * sections (CA PEM / server cert PEM / server key PEM). Free with
+ * linuxdo_free_cstr; NULL on error.
+ */
+char *linuxdo_export_bundle(const char *config_toml, const char *home_dir);
+
+/*
  * Ensures the CA exists and returns its DER bytes (for device trust install).
  *   out_len : receives the byte length.
  * Returns a malloc'd buffer (free with linuxdo_free_bytes), or NULL on failure.

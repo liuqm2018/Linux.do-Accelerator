@@ -59,70 +59,29 @@ final class TunnelManager: ObservableObject {
         manager?.connection.stopVPNTunnel()
     }
 
-    /// Asks the running extension for the CA DER over IPC. Reports a specific
-    /// reason on failure so problems are diagnosable.
-    /// Calls back with (der, nil) on success or (nil, reason) on failure.
-    func fetchCaDer(completion: @escaping (Data?, String?) -> Void) {
-        guard let connection = manager?.connection else {
-            completion(nil, "无 VPN 连接对象（manager 未就绪）"); return
-        }
-        guard let session = connection as? NETunnelProviderSession else {
-            completion(nil, "连接不是 NETunnelProviderSession"); return
-        }
-        // Use the live connection status, not our cached copy.
-        let live = connection.status
-        guard live == .connected else {
-            completion(nil, "隧道未连接（状态=\(live.rawValue)）"); return
-        }
-        // First a Rust-free liveness ping, to tell "extension dead" from
-        // "export returned empty".
-        do {
-            try session.sendProviderMessage(Data("ping".utf8)) { [weak self] pong in
-                guard let pong = pong, String(data: pong, encoding: .utf8) == "PONG" else {
-                    DispatchQueue.main.async {
-                        completion(nil, "IPC 无响应（ping 失败）——扩展可能已崩溃/被系统结束")
-                    }
-                    return
-                }
-                self?.sendExportCa(session: session, completion: completion)
-            }
-        } catch {
-            completion(nil, "ping 发送失败：\(error.localizedDescription)")
-        }
-    }
-
-    private func sendExportCa(session: NETunnelProviderSession,
-                             completion: @escaping (Data?, String?) -> Void) {
-        let message = Data("export-ca".utf8)
-        do {
-            try session.sendProviderMessage(message) { response in
-                DispatchQueue.main.async {
-                    guard let response = response, !response.isEmpty else {
-                        completion(nil, "export-ca 返回空（ping 通了，导出这步空）"); return
-                    }
-                    // Error responses are UTF-8 "ERR:<reason>"; a real CA DER
-                    // starts with 0x30 (SEQUENCE) and never matches this prefix.
-                    if response.starts(with: Data("ERR:".utf8)),
-                       let text = String(data: response, encoding: .utf8) {
-                        completion(nil, String(text.dropFirst(4)))
-                    } else {
-                        completion(response, nil)
-                    }
-                }
-            }
-        } catch {
-            completion(nil, "sendProviderMessage 抛错：\(error.localizedDescription)")
-        }
-    }
-
     // MARK: - Configuration
 
     private func ensureInstalled() async throws {
+        // Generate the cert bundle in the app's own home (no tunnel, no App
+        // Group needed) and hand the server cert/key to the extension via
+        // providerConfiguration. The app installs the matching CA separately.
+        guard let export = RustCore.exportBundle() else {
+            throw NSError(domain: "io.linuxdo.accelerator", code: 10, userInfo: [
+                NSLocalizedDescriptionKey: "生成证书失败：\(RustCore.lastError() ?? "unknown")"
+            ])
+        }
+
         let manager = self.manager ?? NETunnelProviderManager()
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = tunnelBundleId
         // Required by NE even for on-device tunnels; value is cosmetic here.
         proto.serverAddress = "linux.do Accelerator"
+        // Certs travel to the extension inside the saved VPN configuration.
+        proto.providerConfiguration = [
+            "ca_pem": export.bundle.caPem,
+            "server_cert_pem": export.bundle.serverCertPem,
+            "server_key_pem": export.bundle.serverKeyPem,
+        ]
         manager.protocolConfiguration = proto
         manager.localizedDescription = "Linux.do 加速器"
         manager.isEnabled = true
