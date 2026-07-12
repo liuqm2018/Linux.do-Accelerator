@@ -64,8 +64,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let command = String(data: messageData, encoding: .utf8) ?? ""
         switch command {
         case "export-ca":
-            let der = RustCore.exportCaDer()
-            completionHandler?(der)
+            if let der = RustCore.exportCaDer() {
+                completionHandler?(der)
+            } else {
+                // Return the Rust error text (prefixed) so the app can show it.
+                let reason = RustCore.lastError() ?? "unknown"
+                completionHandler?(Data("ERR:\(reason)".utf8))
+            }
         default:
             completionHandler?(nil)
         }

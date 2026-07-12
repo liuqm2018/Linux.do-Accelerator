@@ -78,10 +78,16 @@ final class TunnelManager: ObservableObject {
         do {
             try session.sendProviderMessage(message) { response in
                 DispatchQueue.main.async {
-                    if let response = response, !response.isEmpty {
-                        completion(response, nil)
+                    guard let response = response, !response.isEmpty else {
+                        completion(nil, "扩展返回空"); return
+                    }
+                    // Error responses are UTF-8 "ERR:<reason>"; a real CA DER
+                    // starts with 0x30 (SEQUENCE) and never matches this prefix.
+                    if response.starts(with: Data("ERR:".utf8)),
+                       let text = String(data: response, encoding: .utf8) {
+                        completion(nil, String(text.dropFirst(4)))
                     } else {
-                        completion(nil, "扩展返回空（证书导出失败）")
+                        completion(response, nil)
                     }
                 }
             }

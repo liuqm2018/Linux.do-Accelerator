@@ -9,8 +9,9 @@
 //! All entry points are `#[cfg(target_os = "ios")]`. Everything runs inside the
 //! extension process; there is no fork/exec and no system-trust modification.
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 
 use tokio::sync::watch;
@@ -19,6 +20,16 @@ use crate::certs;
 use crate::config::AppConfig;
 use crate::paths::AppPaths;
 use crate::proxy;
+
+/// Holds the most recent FFI error message so Swift can surface the real cause
+/// instead of an opaque null. Set by fallible entry points on failure.
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_last_error(msg: impl Into<String>) {
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        *slot = Some(msg.into());
+    }
+}
 
 /// Opaque handle returned to Swift. Owns the shutdown channel and the runtime
 /// thread. Freed by `linuxdo_proxy_stop`.
@@ -115,20 +126,26 @@ pub extern "C" fn linuxdo_export_ca_der(
     home_dir: *const c_char,
     out_len: *mut usize,
 ) -> *mut u8 {
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let home = cstr_to_string(home_dir)?;
+    let result = catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<Vec<u8>> {
+        let home = cstr_to_string(home_dir)
+            .ok_or_else(|| anyhow::anyhow!("home_dir is null"))?;
         unsafe { std::env::set_var("LINUXDO_IOS_HOME", &home) };
         let config: AppConfig = match cstr_to_string(config_toml) {
             Some(text) => toml::from_str(&text).unwrap_or_default(),
             None => AppConfig::default(),
         };
-        let paths = AppPaths::resolve(None).ok()?;
-        paths.ensure_layout().ok()?;
-        certs::export_ca_der(&config, &paths.cert_dir).ok()
+        let paths = AppPaths::resolve(None)?;
+        paths.ensure_layout()?;
+        certs::export_ca_der(&config, &paths.cert_dir)
     }));
 
+    let result = match result {
+        Ok(inner) => inner,
+        Err(_) => Err(anyhow::anyhow!("panic during CA export")),
+    };
+
     match result {
-        Ok(Some(mut der)) => {
+        Ok(mut der) => {
             der.shrink_to_fit();
             let len = der.len();
             let ptr = der.as_mut_ptr();
@@ -138,12 +155,39 @@ pub extern "C" fn linuxdo_export_ca_der(
             }
             ptr
         }
-        _ => {
+        Err(error) => {
+            set_last_error(format!("{error:#}"));
             if !out_len.is_null() {
                 unsafe { *out_len = 0 };
             }
             std::ptr::null_mut()
         }
+    }
+}
+
+/// Returns the last FFI error as a malloc'd C string (free with
+/// `linuxdo_free_cstr`), or null if none. Used to diagnose export failures.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_last_error() -> *mut c_char {
+    let msg = LAST_ERROR.lock().ok().and_then(|slot| slot.clone());
+    match msg {
+        Some(text) => CString::new(text)
+            .map(|c| c.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Frees a C string returned by `linuxdo_last_error`.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_free_cstr(ptr: *mut c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = CString::from_raw(ptr);
     }
 }
 

@@ -37,6 +37,12 @@ uint8_t *linuxdo_export_ca_der(const char *config_toml, const char *home_dir, si
 /* Frees a buffer returned by linuxdo_export_ca_der. */
 void linuxdo_free_bytes(uint8_t *ptr, size_t len);
 
+/* Last FFI error as a malloc'd C string (free with linuxdo_free_cstr), or NULL. */
+char *linuxdo_last_error(void);
+
+/* Frees a C string returned by linuxdo_last_error. */
+void linuxdo_free_cstr(char *ptr);
+
 #ifdef __cplusplus
 }
 #endif

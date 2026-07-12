@@ -67,4 +67,12 @@ final class RustCore {
         linuxdo_free_bytes(ptr, length)
         return data
     }
+
+    /// The last error recorded by the Rust core, for diagnostics.
+    static func lastError() -> String? {
+        guard let ptr = linuxdo_last_error() else { return nil }
+        let message = String(cString: ptr)
+        linuxdo_free_cstr(ptr)
+        return message.isEmpty ? nil : message
+    }
 }
