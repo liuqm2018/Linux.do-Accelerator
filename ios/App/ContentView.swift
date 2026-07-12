@@ -70,7 +70,7 @@ struct ContentView: View {
             Divider()
             row("DoH", config.dohEndpoints.first ?? "未配置")
             Divider()
-            row("方式", "仅拦截接管域名的 DNS，走私人 DoH 取 ECH 记录；其它流量直连。")
+            row("方式", "接管域名解析到本地 ECH 代理，代理用私人 DoH 取 ECH 记录后直连 Cloudflare；其它流量直连。需信任本地根证书。")
         }
         .padding()
         .background(Color(.secondarySystemBackground))

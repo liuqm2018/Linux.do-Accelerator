@@ -31,6 +31,15 @@ enum ConfigStore {
         return save(.bundledDefault)
     }
 
+    /// TOML handed to the Rust proxy core. Forces listen_host to loopback so the
+    /// core binds 127.0.0.1 regardless of what a stale container file contains.
+    /// Fields not written here fall back to the core's serde defaults.
+    static func proxyToml() -> String {
+        var config = load()
+        config.listenHost = LinuxdoConfig.loopbackHost
+        return serialize(config)
+    }
+
     @discardableResult
     static func save(_ config: LinuxdoConfig) -> Bool {
         guard let url = configURL() else { return false }

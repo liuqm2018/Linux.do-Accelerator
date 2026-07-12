@@ -12,15 +12,10 @@ final class RustCore {
         ConfigStore.containerURL()?.path
     }
 
-    /// Serializes the current shared config to TOML text for the core.
+    /// Serializes the current shared config to TOML text for the core, with
+    /// listen_host forced to loopback so the proxy binds 127.0.0.1.
     static func configToml() -> String {
-        // ConfigStore already persists TOML into the container; read it back so
-        // the core and the app agree on one file.
-        if let url = ConfigStore.configURL(),
-           let text = try? String(contentsOf: url, encoding: .utf8) {
-            return text
-        }
-        return ""
+        ConfigStore.proxyToml()
     }
 
     var isRunning: Bool { handle != nil }

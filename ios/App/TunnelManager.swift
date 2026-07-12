@@ -29,7 +29,7 @@ final class TunnelManager: ObservableObject {
     }
 
     @Published private(set) var status: Status = .notReady
-    @Published var detail: String = "仅 linux.do / *.linux.do 走自定义 DoH；其它域名走系统默认 DNS。"
+    @Published var detail: String = "接管域名走本地 ECH 代理（需信任根证书）；其它流量直连。"
 
     private var manager: NETunnelProviderManager?
     private var observer: NSObjectProtocol?

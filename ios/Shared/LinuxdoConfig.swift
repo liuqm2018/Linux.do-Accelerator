@@ -12,9 +12,15 @@ struct LinuxdoConfig {
     static let appGroupId = "group.io.linuxdo.accelerator"
     static let configFileName = "linuxdo-accelerator.toml"
 
-    /// Baked-in fallback, kept in sync with `assets/defaults/linuxdo-accelerator.toml`.
+    /// The proxy binds here and managed domains resolve here. Plain 127.0.0.1 is
+    /// the only loopback address guaranteed bindable on iOS, and loopback is
+    /// shared device-wide so the browser reaches the in-extension proxy directly.
+    static let loopbackHost = "127.0.0.1"
+
+    /// Baked-in fallback, kept in sync with `assets/defaults/linuxdo-accelerator.toml`
+    /// except listen_host, which is forced to loopback for the on-device proxy.
     static let bundledDefault = LinuxdoConfig(
-        listenHost: "127.211.73.84",
+        listenHost: loopbackHost,
         dohEndpoints: ["https://aaa.ddd.oaifree.com/query-dns"],
         preferManagedIpv6: false,
         dnsHosts: [:],
