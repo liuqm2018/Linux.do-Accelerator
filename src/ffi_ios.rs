@@ -50,7 +50,11 @@ fn cstr_to_string(ptr: *const c_char) -> Option<String> {
 
 /// Builds config + paths + cert bundle, then spawns a single-threaded tokio
 /// runtime running `run_proxy` until shutdown. Returns null on failure.
-fn start_inner(config_toml: Option<String>, home_dir: String) -> Option<Box<ProxyHandle>> {
+fn start_inner(
+    config_toml: Option<String>,
+    home_dir: String,
+    provided_certs: Option<(String, String, String)>,
+) -> Option<Box<ProxyHandle>> {
     // Point AppPaths at the container the extension gave us.
     unsafe { std::env::set_var("LINUXDO_IOS_HOME", &home_dir) };
 
@@ -61,7 +65,15 @@ fn start_inner(config_toml: Option<String>, home_dir: String) -> Option<Box<Prox
 
     let paths = AppPaths::resolve(None).ok()?;
     paths.ensure_layout().ok()?;
-    let bundle = certs::ensure_bundle(&config, &paths.cert_dir).ok()?;
+    // If the app passed certs (via providerConfiguration), write and use those
+    // so the extension serves exactly the CA the app installed. Otherwise
+    // generate a bundle locally.
+    let bundle = match provided_certs {
+        Some((ca, cert, key)) => {
+            certs::install_bundle_pems(&paths.cert_dir, &ca, &cert, &key).ok()?
+        }
+        None => certs::ensure_bundle(&config, &paths.cert_dir).ok()?,
+    };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -95,7 +107,31 @@ pub extern "C" fn linuxdo_proxy_start(
 ) -> *mut ProxyHandle {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let home = cstr_to_string(home_dir)?;
-        start_inner(cstr_to_string(config_toml), home)
+        start_inner(cstr_to_string(config_toml), home, None)
+    }));
+    match result {
+        Ok(Some(handle)) => Box::into_raw(handle),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Starts the proxy using caller-provided cert PEMs (from the app via
+/// providerConfiguration) instead of generating them. Returns null on error.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_proxy_start_with_certs(
+    config_toml: *const c_char,
+    home_dir: *const c_char,
+    ca_pem: *const c_char,
+    server_cert_pem: *const c_char,
+    server_key_pem: *const c_char,
+) -> *mut ProxyHandle {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let home = cstr_to_string(home_dir)?;
+        let ca = cstr_to_string(ca_pem)?;
+        let cert = cstr_to_string(server_cert_pem)?;
+        let key = cstr_to_string(server_key_pem)?;
+        start_inner(cstr_to_string(config_toml), home, Some((ca, cert, key)))
     }));
     match result {
         Ok(Some(handle)) => Box::into_raw(handle),
@@ -165,6 +201,51 @@ pub extern "C" fn linuxdo_export_ca_der(
     }
 }
 
+/// Ensures the bundle and returns it as a C string with three sections the app
+/// splits on sentinel lines: CA PEM, server cert PEM, server key PEM. The app
+/// installs the CA and passes cert+key to the extension. Free with
+/// `linuxdo_free_cstr`; null on error (see `linuxdo_last_error`).
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn linuxdo_export_bundle(
+    config_toml: *const c_char,
+    home_dir: *const c_char,
+) -> *mut c_char {
+    let result = catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<String> {
+        let home = cstr_to_string(home_dir).ok_or_else(|| anyhow::anyhow!("home_dir is null"))?;
+        unsafe { std::env::set_var("LINUXDO_IOS_HOME", &home) };
+        let config: AppConfig = match cstr_to_string(config_toml) {
+            Some(text) => toml::from_str(&text).unwrap_or_default(),
+            None => AppConfig::default(),
+        };
+        let paths = AppPaths::resolve(None)?;
+        paths.ensure_layout()?;
+        let pems = certs::export_bundle_pems(&config, &paths.cert_dir)?;
+        // Sentinel-delimited sections; PEM never contains these marker lines.
+        Ok(format!(
+            "-----LDA-CA-----\n{}\n-----LDA-CERT-----\n{}\n-----LDA-KEY-----\n{}",
+            pems.ca_pem.trim(),
+            pems.server_cert_pem.trim(),
+            pems.server_key_pem.trim(),
+        ))
+    }));
+
+    let result = match result {
+        Ok(inner) => inner,
+        Err(_) => Err(anyhow::anyhow!("panic during bundle export")),
+    };
+
+    match result {
+        Ok(text) => CString::new(text)
+            .map(|c| c.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(error) => {
+            set_last_error(format!("{error:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Returns the last FFI error as a malloc'd C string (free with
 /// `linuxdo_free_cstr`), or null if none. Used to diagnose export failures.
 #[cfg(target_os = "ios")]
@@ -208,6 +289,8 @@ pub extern "C" fn linuxdo_free_bytes(ptr: *mut u8, len: usize) {
 #[cfg(not(target_os = "ios"))]
 #[allow(dead_code)]
 fn _keep_used() {
-    let _ = start_inner as fn(Option<String>, String) -> Option<Box<ProxyHandle>>;
+    let _ = start_inner
+        as fn(Option<String>, String, Option<(String, String, String)>) -> Option<Box<ProxyHandle>>;
     let _ = cstr_to_string as fn(*const c_char) -> Option<String>;
+    let _ = set_last_error::<String>;
 }

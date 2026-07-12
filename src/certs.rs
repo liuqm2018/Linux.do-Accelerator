@@ -103,6 +103,53 @@ pub fn load_bundle(root: &Path) -> Result<CertificateBundle> {
     Ok(bundle)
 }
 
+/// PEM material for the whole bundle, so the app can install the CA and hand the
+/// server cert/key to the extension over providerConfiguration.
+pub struct BundlePems {
+    pub ca_der: Vec<u8>,
+    pub ca_pem: String,
+    pub server_cert_pem: String,
+    pub server_key_pem: String,
+}
+
+/// Ensures the bundle exists, then reads back all PEM material (+ CA DER).
+pub fn export_bundle_pems(config: &AppConfig, root: &Path) -> Result<BundlePems> {
+    let bundle = ensure_bundle(config, root)?;
+    let ca_pem = fs::read_to_string(&bundle.ca_cert_path)
+        .with_context(|| format!("failed to read {}", bundle.ca_cert_path.display()))?;
+    let server_cert_pem = fs::read_to_string(&bundle.server_cert_path)
+        .with_context(|| format!("failed to read {}", bundle.server_cert_path.display()))?;
+    let server_key_pem = fs::read_to_string(&bundle.server_key_path)
+        .with_context(|| format!("failed to read {}", bundle.server_key_path.display()))?;
+    let ca_der = pem_to_der(&ca_pem).context("failed to decode CA PEM to DER")?;
+    Ok(BundlePems {
+        ca_der,
+        ca_pem,
+        server_cert_pem,
+        server_key_pem,
+    })
+}
+
+/// Writes caller-provided PEMs to the bundle paths (no key generation), so the
+/// extension can serve exactly the cert the app already installed. Returns the
+/// bundle pointing at the written files.
+pub fn install_bundle_pems(
+    root: &Path,
+    ca_pem: &str,
+    server_cert_pem: &str,
+    server_key_pem: &str,
+) -> Result<CertificateBundle> {
+    fs::create_dir_all(root).with_context(|| format!("failed to create {}", root.display()))?;
+    let bundle = bundle_paths(root);
+    fs::write(&bundle.ca_cert_path, ca_pem)
+        .with_context(|| format!("failed to write {}", bundle.ca_cert_path.display()))?;
+    fs::write(&bundle.server_cert_path, server_cert_pem)
+        .with_context(|| format!("failed to write {}", bundle.server_cert_path.display()))?;
+    fs::write(&bundle.server_key_path, server_key_pem)
+        .with_context(|| format!("failed to write {}", bundle.server_key_path.display()))?;
+    Ok(bundle)
+}
+
 fn bundle_paths(root: &Path) -> CertificateBundle {
     CertificateBundle {
         ca_cert_path: root.join("linuxdo-accelerator-root-ca.crt"),
