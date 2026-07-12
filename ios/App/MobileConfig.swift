@@ -65,7 +65,7 @@ enum MobileConfig {
         var hasher = Hasher()
         hasher.combine(data)
         hasher.combine(salt)
-        let h = UInt64(bitPattern: Int64(hasher.hashValue))
+        let h = UInt64(bitPattern: Int64(hasher.finalize()))
         // Format as a UUID-shaped string; uniqueness within this app is enough.
         let hi = String(format: "%08X", UInt32(truncatingIfNeeded: h >> 32))
         let lo = String(format: "%08X", UInt32(truncatingIfNeeded: h))
