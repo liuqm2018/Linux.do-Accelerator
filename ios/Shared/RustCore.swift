@@ -7,9 +7,22 @@ final class RustCore {
     /// Opaque handle to a running proxy, or nil when stopped.
     private var handle: OpaquePointer?
 
-    /// The writable App Group container the core uses for config + certs.
+    /// Writable home for the core (config + certs). Prefers the App Group
+    /// container, but falls back to this process's own Application Support dir
+    /// when the App Group entitlement is absent (e.g. self-signed with lcsign).
+    /// Without App Group the app and extension have separate homes, so the CA
+    /// is shared from the extension to the app over IPC, not via a shared file.
     static func homeDirectory() -> String? {
-        ConfigStore.containerURL()?.path
+        if let url = ConfigStore.containerURL() {
+            return url.path
+        }
+        if let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        ) {
+            return support.appendingPathComponent("linuxdo-accelerator").path
+        }
+        return NSTemporaryDirectory() + "linuxdo-accelerator"
     }
 
     /// Serializes the current shared config to TOML text for the core, with

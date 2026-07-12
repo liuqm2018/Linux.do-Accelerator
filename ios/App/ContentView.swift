@@ -73,13 +73,23 @@ struct ContentView: View {
             Text("加速依赖本地 HTTPS 接管，需安装并信任根证书（一次性）。")
                 .font(.footnote).foregroundColor(.secondary)
             Button {
-                certMessage = "正在打开 Safari 安装描述文件…"
-                certInstaller.installCA { result in
-                    switch result {
-                    case .success:
-                        certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
-                    case .failure(let error):
-                        certMessage = "安装失败：\(error.localizedDescription)"
+                guard tunnel.status.isRunning else {
+                    certMessage = "请先「开始加速」，证书由加速服务提供。"
+                    return
+                }
+                certMessage = "正在从加速服务获取证书…"
+                tunnel.fetchCaDer { der in
+                    guard let der = der else {
+                        certMessage = "获取证书失败：请确认加速已开启后重试。"
+                        return
+                    }
+                    certInstaller.installCA(caDer: der) { result in
+                        switch result {
+                        case .success:
+                            certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
+                        case .failure(let error):
+                            certMessage = "安装失败：\(error.localizedDescription)"
+                        }
                     }
                 }
             } label: {

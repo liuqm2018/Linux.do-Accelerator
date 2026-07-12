@@ -57,6 +57,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler()
     }
 
+    /// IPC from the app. "export-ca" returns the CA DER bytes so the app can
+    /// build/install the .mobileconfig — this is how the CA is shared when
+    /// there is no App Group container.
+    override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        let command = String(data: messageData, encoding: .utf8) ?? ""
+        switch command {
+        case "export-ca":
+            let der = RustCore.exportCaDer()
+            completionHandler?(der)
+        default:
+            completionHandler?(nil)
+        }
+    }
+
     // MARK: - Network settings
 
     private func makeTunnelSettings() -> NEPacketTunnelNetworkSettings {

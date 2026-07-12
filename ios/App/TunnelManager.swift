@@ -59,6 +59,24 @@ final class TunnelManager: ObservableObject {
         manager?.connection.stopVPNTunnel()
     }
 
+    /// Asks the running extension for the CA DER over IPC. Requires the tunnel
+    /// to be connected (the extension owns the cert in its own sandbox).
+    func fetchCaDer(completion: @escaping (Data?) -> Void) {
+        guard let session = manager?.connection as? NETunnelProviderSession,
+              status == .connected else {
+            completion(nil)
+            return
+        }
+        let message = Data("export-ca".utf8)
+        do {
+            try session.sendProviderMessage(message) { response in
+                DispatchQueue.main.async { completion(response) }
+            }
+        } catch {
+            completion(nil)
+        }
+    }
+
     // MARK: - Configuration
 
     private func ensureInstalled() async throws {

@@ -31,20 +31,10 @@ final class CertInstaller {
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "io.linuxdo.accelerator.certserver")
 
-    /// Exports the CA, starts the server, and opens Safari. Calls back on the
-    /// main thread with success/failure.
-    func installCA(completion: @escaping (Result<Void, Error>) -> Void) {
-        // Distinguish "no container" (missing App Group) from "export failed"
-        // (Rust cert generation error) so the message is actionable.
-        guard RustCore.homeDirectory() != nil else {
-            DispatchQueue.main.async { completion(.failure(InstallError.noContainer)) }
-            return
-        }
-        guard let der = RustCore.exportCaDer() else {
-            DispatchQueue.main.async { completion(.failure(InstallError.exportFailed)) }
-            return
-        }
-        guard let profile = MobileConfig.build(caDer: der) else {
+    /// Builds a profile from the CA bytes (obtained from the running extension),
+    /// serves it, and opens Safari. Calls back on the main thread.
+    func installCA(caDer: Data, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let profile = MobileConfig.build(caDer: caDer) else {
             DispatchQueue.main.async { completion(.failure(InstallError.badProfile)) }
             return
         }
