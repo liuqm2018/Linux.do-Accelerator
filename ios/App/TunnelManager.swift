@@ -74,12 +74,31 @@ final class TunnelManager: ObservableObject {
         guard live == .connected else {
             completion(nil, "隧道未连接（状态=\(live.rawValue)）"); return
         }
+        // First a Rust-free liveness ping, to tell "extension dead" from
+        // "export returned empty".
+        do {
+            try session.sendProviderMessage(Data("ping".utf8)) { [weak self] pong in
+                guard let pong = pong, String(data: pong, encoding: .utf8) == "PONG" else {
+                    DispatchQueue.main.async {
+                        completion(nil, "IPC 无响应（ping 失败）——扩展可能已崩溃/被系统结束")
+                    }
+                    return
+                }
+                self?.sendExportCa(session: session, completion: completion)
+            }
+        } catch {
+            completion(nil, "ping 发送失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func sendExportCa(session: NETunnelProviderSession,
+                             completion: @escaping (Data?, String?) -> Void) {
         let message = Data("export-ca".utf8)
         do {
             try session.sendProviderMessage(message) { response in
                 DispatchQueue.main.async {
                     guard let response = response, !response.isEmpty else {
-                        completion(nil, "扩展返回空"); return
+                        completion(nil, "export-ca 返回空（ping 通了，导出这步空）"); return
                     }
                     // Error responses are UTF-8 "ERR:<reason>"; a real CA DER
                     // starts with 0x30 (SEQUENCE) and never matches this prefix.

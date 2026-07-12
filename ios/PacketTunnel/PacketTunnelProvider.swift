@@ -77,6 +77,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         let command = String(data: messageData, encoding: .utf8) ?? ""
         switch command {
+        case "ping":
+            // Liveness check that touches no Rust code.
+            completionHandler?(Data("PONG".utf8))
         case "export-ca":
             // Return the CA captured at start; no Rust work here.
             if let der = cachedCaDer {
