@@ -1,9 +1,16 @@
 # Linux.do Accelerator — iOS
 
-iPhone 版加速器。原理与 Android 版一致：本地起一个 **仅接管 `linux.do` / `idcflare.com` DNS** 的
-Network Extension 隧道，把这些域名的 DNS 查询走私人 DoH，取回带 **ECH** 的 `HTTPS/SVCB` 记录，
-让支持 ECH 的浏览器（iOS 17+ Safari 原生支持）加密 SNI，绕过运营商的 SNI 阻断。其它域名和所有真实
-流量都不进隧道，直连。
+iPhone 版加速器。**0.2.0 起改为本地 TLS 终止 + ECH 代理架构**（与桌面版一致），所有浏览器都可用，
+不再只有 Safari：
+
+- 接管域名（`linux.do` / `idcflare.com`）通过隧道 DNS 解析到 `127.0.0.1`
+- 浏览器连 `127.0.0.1:443`（iOS 回环全设备共享）→ 命中扩展内的 **Rust ECH 代理**
+- 代理用本地根证书终止 TLS，再用私人 DoH 取 ECH 记录、以 **ECH** 直连 Cloudflare
+- 只有 DNS 走隧道；真实流量（含代理到 Cloudflare 的上游）全部直连
+- **需安装并信任本地根证书**（App 内一键安装 + 按提示开启信任）
+
+> 0.1.x 是纯 DNS 方案，依赖浏览器自己做 ECH，只有 Safari 稳定且几天后会因 ECH key 轮换失效。
+> 0.2.0 把 ECH 交给内置 Rust 核心处理，彻底解决这两个问题。
 
 ## 为什么是"未签名 + TrollStore"
 

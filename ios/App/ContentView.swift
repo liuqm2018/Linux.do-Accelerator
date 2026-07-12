@@ -4,6 +4,8 @@ struct ContentView: View {
     @StateObject private var tunnel = TunnelManager()
     @State private var config = ConfigStore.load()
     @State private var showConfig = false
+    @State private var certMessage: String?
+    private let certInstaller = CertInstaller()
 
     var body: some View {
         NavigationView {
@@ -11,6 +13,7 @@ struct ContentView: View {
                 VStack(spacing: 20) {
                     statusCard
                     actionButton
+                    certCard
                     infoCard
                 }
                 .padding()
@@ -62,6 +65,41 @@ struct ContentView: View {
                 .foregroundColor(.white)
                 .cornerRadius(12)
         }
+    }
+
+    private var certCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("根证书").font(.headline)
+            Text("加速依赖本地 HTTPS 接管，需安装并信任根证书（一次性）。")
+                .font(.footnote).foregroundColor(.secondary)
+            Button {
+                certMessage = "正在打开 Safari 安装描述文件…"
+                certInstaller.installCA { result in
+                    switch result {
+                    case .success:
+                        certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
+                    case .failure(let error):
+                        certMessage = "安装失败：\(error.localizedDescription)"
+                    }
+                }
+            } label: {
+                Text("安装根证书")
+                    .font(.subheadline).bold()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor.opacity(0.15))
+                    .foregroundColor(.accentColor)
+                    .cornerRadius(10)
+            }
+            if let certMessage = certMessage {
+                Text(certMessage).font(.caption).foregroundColor(.secondary)
+            }
+            Text("提示：安装后务必在「证书信任设置」里为本证书打开完全信任，否则浏览器会报证书错误。")
+                .font(.caption2).foregroundColor(.secondary)
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(16)
     }
 
     private var infoCard: some View {
