@@ -7,7 +7,25 @@ import UIKit
 /// is used because iOS only presents the profile-install UI for profiles opened
 /// via Safari (not from arbitrary in-app file handles).
 final class CertInstaller {
-    enum InstallError: Error { case noCert, badProfile, server(String) }
+    enum InstallError: LocalizedError {
+        case noContainer
+        case exportFailed
+        case badProfile
+        case server(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .noContainer:
+                return "App Group 容器不可用。自签时请确认签名包含 App Group 权限 (group.io.linuxdo.accelerator)。"
+            case .exportFailed:
+                return "Rust 核心导出根证书失败（生成/写入证书出错）。"
+            case .badProfile:
+                return "构建描述文件失败。"
+            case .server(let detail):
+                return "本地服务器错误：\(detail)"
+            }
+        }
+    }
 
     private var listener: NWListener?
     private var connections: [NWConnection] = []
@@ -16,8 +34,14 @@ final class CertInstaller {
     /// Exports the CA, starts the server, and opens Safari. Calls back on the
     /// main thread with success/failure.
     func installCA(completion: @escaping (Result<Void, Error>) -> Void) {
+        // Distinguish "no container" (missing App Group) from "export failed"
+        // (Rust cert generation error) so the message is actionable.
+        guard RustCore.homeDirectory() != nil else {
+            DispatchQueue.main.async { completion(.failure(InstallError.noContainer)) }
+            return
+        }
         guard let der = RustCore.exportCaDer() else {
-            DispatchQueue.main.async { completion(.failure(InstallError.noCert)) }
+            DispatchQueue.main.async { completion(.failure(InstallError.exportFailed)) }
             return
         }
         guard let profile = MobileConfig.build(caDer: der) else {
