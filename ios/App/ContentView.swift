@@ -78,17 +78,18 @@ struct ContentView: View {
                     return
                 }
                 certMessage = "正在从加速服务获取证书…"
-                tunnel.fetchCaDer { der in
-                    guard let der = der else {
-                        certMessage = "获取证书失败：请确认加速已开启后重试。"
-                        return
-                    }
-                    certInstaller.installCA(caDer: der) { result in
-                        switch result {
-                        case .success:
-                            certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
-                        case .failure(let error):
-                            certMessage = "安装失败：\(error.localizedDescription)"
+                tunnel.fetchCaDer { result in
+                    switch result {
+                    case .failure(let reason):
+                        certMessage = "获取证书失败：\(reason)"
+                    case .success(let der):
+                        certInstaller.installCA(caDer: der) { installResult in
+                            switch installResult {
+                            case .success:
+                                certMessage = "已打开 Safari。按提示安装描述文件后，再到\n设置 → 通用 → VPN 与设备管理 → 安装，\n然后设置 → 通用 → 关于本机 → 证书信任设置 里打开信任开关。"
+                            case .failure(let error):
+                                certMessage = "安装失败：\(error.localizedDescription)"
+                            }
                         }
                     }
                 }
