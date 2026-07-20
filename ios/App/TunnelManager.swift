@@ -76,11 +76,15 @@ final class TunnelManager: ObservableObject {
         proto.providerBundleIdentifier = tunnelBundleId
         // Required by NE even for on-device tunnels; value is cosmetic here.
         proto.serverAddress = "linux.do Accelerator"
-        // Certs travel to the extension inside the saved VPN configuration.
+        // Certs and the edited config both travel to the extension inside the
+        // saved VPN configuration. Without an App Group (lcsign self-sign) the
+        // extension can't read the app's config file, so we ship the TOML here;
+        // the extension parses it instead of falling back to bundledDefault.
         proto.providerConfiguration = [
             "ca_pem": export.bundle.caPem,
             "server_cert_pem": export.bundle.serverCertPem,
             "server_key_pem": export.bundle.serverKeyPem,
+            "config_toml": ConfigStore.serializedCurrent(),
         ]
         manager.protocolConfiguration = proto
         manager.localizedDescription = "Linux.do 加速器"

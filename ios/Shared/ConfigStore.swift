@@ -9,11 +9,23 @@ enum ConfigStore {
         )
     }
 
+    /// Location of the persisted config. Prefers the App Group container, but
+    /// falls back to this process's own Application Support dir when the App
+    /// Group entitlement is absent (self-signed with lcsign). Without App Group
+    /// the app and extension have separate homes, so the edited config also
+    /// travels to the extension via `providerConfiguration` (see TunnelManager).
     static func configURL() -> URL? {
-        containerURL()?.appendingPathComponent(LinuxdoConfig.configFileName)
+        if let container = containerURL() {
+            return container.appendingPathComponent(LinuxdoConfig.configFileName)
+        }
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        ) else { return nil }
+        return support.appendingPathComponent(LinuxdoConfig.configFileName)
     }
 
-    /// Reads the config, preferring the App Group file, else the bundled default.
+    /// Reads the config, preferring the persisted file, else the bundled default.
     static func load() -> LinuxdoConfig {
         if let url = configURL(),
            let text = try? String(contentsOf: url, encoding: .utf8),
@@ -23,12 +35,34 @@ enum ConfigStore {
         return .bundledDefault
     }
 
+    /// Parses a TOML string (e.g. one delivered via providerConfiguration) into
+    /// a config, falling back to the bundled default on parse failure.
+    static func from(toml text: String) -> LinuxdoConfig {
+        guard let parsed = try? MiniToml.parse(text) else { return .bundledDefault }
+        return apply(parsed, onto: .bundledDefault)
+    }
+
+    /// Writes raw TOML to the persisted config location. Used by the extension to
+    /// mirror the config delivered via providerConfiguration into its own file,
+    /// so the Rust core (which reads via load()) sees the user's DoH edits.
+    @discardableResult
+    static func persist(toml text: String) -> Bool {
+        guard let url = configURL() else { return false }
+        return (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil
+    }
+
     /// Ensures a config file exists in the App Group container on first launch.
     @discardableResult
     static func ensureSeeded() -> Bool {
         guard let url = configURL() else { return false }
         if FileManager.default.fileExists(atPath: url.path) { return true }
         return save(.bundledDefault)
+    }
+
+    /// Serializes the currently persisted config to TOML, for delivery to the
+    /// extension via providerConfiguration (works without an App Group).
+    static func serializedCurrent() -> String {
+        serialize(load())
     }
 
     /// TOML handed to the Rust proxy core. Forces listen_host to loopback so the
