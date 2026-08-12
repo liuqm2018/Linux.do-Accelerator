@@ -1026,15 +1026,29 @@ async fn doh_query_once(
     host: &str,
     record_type: &str,
 ) -> Result<Vec<DohAnswer>> {
+    match doh_query_json(client, endpoint, host, record_type).await {
+        Ok(answers) => Ok(answers),
+        Err(json_error) => doh_query_dns_message(client, endpoint, host, record_type)
+            .await
+            .with_context(|| format!("JSON DoH failed first: {json_error:#}")),
+    }
+}
+
+async fn doh_query_json(
+    client: &Client,
+    endpoint: &str,
+    host: &str,
+    record_type: &str,
+) -> Result<Vec<DohAnswer>> {
     let response = client
         .get(endpoint)
         .query(&[("name", host), ("type", record_type)])
         .header("accept", "application/dns-json")
         .send()
         .await
-        .with_context(|| format!("failed DoH request to {endpoint}"))?
+        .with_context(|| format!("failed JSON DoH request to {endpoint}"))?
         .error_for_status()
-        .with_context(|| format!("DoH server {endpoint} returned failure status"))?;
+        .with_context(|| format!("JSON DoH server {endpoint} returned failure status"))?;
 
     let payload = response
         .text()
@@ -1051,6 +1065,187 @@ async fn doh_query_once(
     }
 
     Ok(payload.answers.unwrap_or_default())
+}
+
+async fn doh_query_dns_message(
+    client: &Client,
+    endpoint: &str,
+    host: &str,
+    record_type: &str,
+) -> Result<Vec<DohAnswer>> {
+    use base64::Engine as _;
+
+    let record_type_code = dns_record_type_code(record_type)?;
+    let query = build_dns_wire_query(host, record_type_code)?;
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(query);
+    let response = client
+        .get(endpoint)
+        .query(&[("dns", encoded.as_str())])
+        .header("accept", "application/dns-message")
+        .send()
+        .await
+        .with_context(|| format!("failed DNS-message DoH request to {endpoint}"))?
+        .error_for_status()
+        .with_context(|| format!("DNS-message DoH server {endpoint} returned failure status"))?;
+    let payload = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read DNS-message payload from {endpoint}"))?;
+    parse_dns_wire_response(&payload, record_type_code)
+        .with_context(|| format!("failed to decode DNS-message response from {endpoint}"))
+}
+
+fn dns_record_type_code(record_type: &str) -> Result<u16> {
+    match record_type {
+        "A" => Ok(1),
+        "AAAA" => Ok(28),
+        "HTTPS" => Ok(65),
+        _ => anyhow::bail!("unsupported DNS record type {record_type}"),
+    }
+}
+
+fn build_dns_wire_query(host: &str, record_type: u16) -> Result<Vec<u8>> {
+    let mut packet = Vec::with_capacity(64);
+    packet.extend_from_slice(&0x4c44u16.to_be_bytes());
+    packet.extend_from_slice(&0x0100u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    encode_dns_name(host, &mut packet)?;
+    packet.extend_from_slice(&record_type.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    Ok(packet)
+}
+
+fn encode_dns_name(host: &str, output: &mut Vec<u8>) -> Result<()> {
+    let host = host.trim_end_matches('.');
+    if host.is_empty() {
+        output.push(0);
+        return Ok(());
+    }
+    for label in host.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            anyhow::bail!("invalid DNS label in {host}");
+        }
+        output.push(label.len() as u8);
+        output.extend_from_slice(label.as_bytes());
+    }
+    output.push(0);
+    Ok(())
+}
+
+fn parse_dns_wire_response(packet: &[u8], requested_type: u16) -> Result<Vec<DohAnswer>> {
+    if packet.len() < 12 {
+        anyhow::bail!("DNS response header is truncated");
+    }
+    let flags = read_dns_u16(packet, 2)?;
+    if flags & 0x8000 == 0 {
+        anyhow::bail!("DNS message is not a response");
+    }
+    let rcode = flags & 0x000f;
+    if rcode != 0 {
+        anyhow::bail!("DNS response returned rcode {rcode}");
+    }
+
+    let question_count = read_dns_u16(packet, 4)? as usize;
+    let answer_count = read_dns_u16(packet, 6)? as usize;
+    let mut offset = 12usize;
+    for _ in 0..question_count {
+        offset = skip_dns_wire_name(packet, offset)?;
+        offset = offset
+            .checked_add(4)
+            .context("DNS question offset overflow")?;
+        if offset > packet.len() {
+            anyhow::bail!("DNS question is truncated");
+        }
+    }
+
+    let mut answers = Vec::new();
+    for _ in 0..answer_count {
+        offset = skip_dns_wire_name(packet, offset)?;
+        if offset + 10 > packet.len() {
+            anyhow::bail!("DNS answer header is truncated");
+        }
+        let record_type = read_dns_u16(packet, offset)?;
+        let class = read_dns_u16(packet, offset + 2)?;
+        let ttl = read_dns_u32(packet, offset + 4)?;
+        let data_len = read_dns_u16(packet, offset + 8)? as usize;
+        offset += 10;
+        let data = packet
+            .get(offset..offset + data_len)
+            .context("DNS answer data is truncated")?;
+        offset += data_len;
+
+        if class != 1 || record_type != requested_type {
+            continue;
+        }
+        let data = match record_type {
+            1 if data.len() == 4 => {
+                std::net::Ipv4Addr::new(data[0], data[1], data[2], data[3]).to_string()
+            }
+            28 if data.len() == 16 => {
+                let octets: [u8; 16] = data.try_into().expect("length checked");
+                std::net::Ipv6Addr::from(octets).to_string()
+            }
+            65 => format_dns_hex_rdata(data),
+            _ => continue,
+        };
+        answers.push(DohAnswer {
+            record_type,
+            ttl: Some(ttl),
+            data,
+        });
+    }
+    Ok(answers)
+}
+
+fn skip_dns_wire_name(packet: &[u8], mut offset: usize) -> Result<usize> {
+    loop {
+        let length = *packet.get(offset).context("DNS name is truncated")?;
+        if length & 0xc0 == 0xc0 {
+            if offset + 2 > packet.len() {
+                anyhow::bail!("DNS compression pointer is truncated");
+            }
+            return Ok(offset + 2);
+        }
+        if length & 0xc0 != 0 {
+            anyhow::bail!("invalid DNS label length");
+        }
+        offset += 1;
+        if length == 0 {
+            return Ok(offset);
+        }
+        offset = offset
+            .checked_add(length as usize)
+            .context("DNS name offset overflow")?;
+        if offset > packet.len() {
+            anyhow::bail!("DNS label is truncated");
+        }
+    }
+}
+
+fn read_dns_u16(packet: &[u8], offset: usize) -> Result<u16> {
+    let bytes = packet
+        .get(offset..offset + 2)
+        .context("DNS u16 field is truncated")?;
+    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_dns_u32(packet: &[u8], offset: usize) -> Result<u32> {
+    let bytes = packet
+        .get(offset..offset + 4)
+        .context("DNS u32 field is truncated")?;
+    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn format_dns_hex_rdata(data: &[u8]) -> String {
+    let encoded = data
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("\\# {} {encoded}", data.len())
 }
 
 fn min_ttl_duration(answers: &[DohAnswer]) -> Option<Duration> {
@@ -1478,6 +1673,41 @@ mod tests {
             Some("cloudflare-ech.com")
         );
         assert!(binding.ech_config_list.is_some());
+    }
+
+    #[test]
+    fn parses_dns_message_https_answer_with_ech() {
+        let packet = decode_hex(
+            "4c4481800001000100000001056c696e757802646f0000410001c00c004100010000012c00880001000001000602683302683200040008681410eaac42a63d000500470045fe0d0041a1002000209617c436d19cf32fa6a8add0a4ea77c7e4761843759b4be749533759fb87810f0004000100010012636c6f7564666c6172652d6563682e636f6d000000060020260647000010000000000000681410ea260647000010000000000000ac42a63d0000291000000000000000",
+        );
+        let answers = parse_dns_wire_response(&packet, 65).unwrap();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].ttl, Some(300));
+        let binding = parse_https_answer(&answers[0].data).unwrap();
+        assert_eq!(binding.priority, 1);
+        assert_eq!(
+            binding.ech_public_name.as_deref(),
+            Some("cloudflare-ech.com")
+        );
+        assert!(binding.ech_config_list.is_some());
+    }
+
+    #[test]
+    fn builds_dns_message_query() {
+        let query = build_dns_wire_query("linux.do", 65).unwrap();
+        assert_eq!(&query[..12], b"LD\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00");
+        assert_eq!(&query[12..], b"\x05linux\x02do\x00\x00A\x00\x01");
+    }
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let pair = std::str::from_utf8(pair).unwrap();
+                u8::from_str_radix(pair, 16).unwrap()
+            })
+            .collect()
     }
 
     #[test]
