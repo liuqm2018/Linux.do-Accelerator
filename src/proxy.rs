@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use http::header::{HOST, LOCATION};
+use http::header::{CONTENT_TYPE, HOST, LOCATION};
 use http::{HeaderMap, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -491,8 +491,7 @@ async fn send_once(
     path_and_query: &str,
 ) -> Result<UpstreamResponse> {
     if upstream_scheme.eq_ignore_ascii_case("http") {
-        let request =
-            build_upstream_request(request_host, method, headers, body, path_and_query)?;
+        let request = build_upstream_request(request_host, method, headers, body, path_and_query)?;
         let stream = connect_tcp(addr).await?;
         return Ok(UpstreamResponse {
             response: send_over_io(TokioIo::new(stream), request).await?,
@@ -988,13 +987,10 @@ async fn write_cached_upstream(
     }
     let mut cache = state.resolve_cache.write().await;
     cache.retain(|_, entry| Instant::now() < entry.expires_at);
-    cache.insert(
-        key,
-        CachedResolvedUpstream {
-            upstream,
-            expires_at: Instant::now() + ttl,
-        },
-    );
+    cache.insert(key, CachedResolvedUpstream {
+        upstream,
+        expires_at: Instant::now() + ttl,
+    });
 }
 
 async fn read_cached_doh_answers(state: &AppState, key: &DohCacheKey) -> Option<Vec<DohAnswer>> {
@@ -1018,13 +1014,10 @@ async fn write_cached_doh_answers(state: &AppState, key: DohCacheKey, answers: V
 
     let mut cache = state.doh_cache.write().await;
     cache.retain(|_, entry| Instant::now() < entry.expires_at);
-    cache.insert(
-        key,
-        CachedDohAnswers {
-            answers,
-            expires_at: Instant::now() + ttl,
-        },
-    );
+    cache.insert(key, CachedDohAnswers {
+        answers,
+        expires_at: Instant::now() + ttl,
+    });
 }
 
 async fn doh_query_once(
@@ -1132,6 +1125,11 @@ fn format_socket_addrs(addrs: &[SocketAddr]) -> String {
 }
 
 fn parse_https_answer(raw_rdata: &str) -> Result<HttpsServiceBinding> {
+    let raw_rdata = raw_rdata.trim();
+    if !raw_rdata.starts_with("\\#") {
+        return parse_https_presentation_rdata(raw_rdata);
+    }
+
     let bytes = parse_dns_json_hex_rdata(raw_rdata)?;
     if bytes.len() < 3 {
         anyhow::bail!("HTTPS RR data is too short");
@@ -1169,6 +1167,46 @@ fn parse_https_answer(raw_rdata: &str) -> Result<HttpsServiceBinding> {
             binding.ech_public_name = parse_ech_public_name(&ech_config_list).ok();
             binding.ech_config_list = Some(ech_config_list);
         }
+    }
+
+    Ok(binding)
+}
+
+fn parse_https_presentation_rdata(raw_rdata: &str) -> Result<HttpsServiceBinding> {
+    use base64::Engine as _;
+
+    let mut fields = raw_rdata.split_whitespace();
+    let priority = fields
+        .next()
+        .context("missing HTTPS RR priority")?
+        .parse::<u16>()
+        .context("invalid HTTPS RR priority")?;
+    let target = fields.next().context("missing HTTPS RR target name")?;
+    let mut binding = HttpsServiceBinding {
+        priority,
+        ..Default::default()
+    };
+    if target != "." {
+        binding.target_name = Some(target.trim_end_matches('.').to_string());
+    }
+
+    for field in fields {
+        let Some((key, raw_value)) = field.split_once('=') else {
+            continue;
+        };
+        if !key.eq_ignore_ascii_case("ech") {
+            continue;
+        }
+
+        let encoded = raw_value.trim_matches('"');
+        let ech_config_list = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded))
+            .context("invalid base64 ECH service parameter")?;
+        let ech_config_list = parse_ech_config_param(&ech_config_list)?;
+        binding.ech_public_name = parse_ech_public_name(&ech_config_list).ok();
+        binding.ech_config_list = Some(ech_config_list);
+        break;
     }
 
     Ok(binding)
@@ -1399,6 +1437,7 @@ fn should_skip_response_header(header_name: &str) -> bool {
 fn simple_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Full::new(Bytes::from(message.to_string())))
         .unwrap()
 }
@@ -1421,4 +1460,32 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>> {
     rustls_pemfile::private_key(&mut reader)
         .context("failed to parse private key")?
         .ok_or_else(|| anyhow::anyhow!("private key not found in {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CURRENT_LINUX_DO_HTTPS_RR: &str = "1 . alpn=h3,h2 ipv4hint=104.20.16.234,172.66.166.61 ech=AEX+DQBBUgAgACApX7zJGzc2YT6igXiXwkBCe+2AqFgEbRjVaSzuvIIPbgAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA= ipv6hint=2606:4700:10::6814:10ea,2606:4700:10::ac42:a63d";
+
+    #[test]
+    fn parses_presentation_format_https_rr_with_ech() {
+        let binding = parse_https_answer(CURRENT_LINUX_DO_HTTPS_RR).unwrap();
+        assert_eq!(binding.priority, 1);
+        assert_eq!(binding.target_name, None);
+        assert_eq!(
+            binding.ech_public_name.as_deref(),
+            Some("cloudflare-ech.com")
+        );
+        assert!(binding.ech_config_list.is_some());
+    }
+
+    #[test]
+    fn simple_error_response_declares_utf8() {
+        let response = simple_response(StatusCode::BAD_GATEWAY, "ECH 强制模式");
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+    }
 }
