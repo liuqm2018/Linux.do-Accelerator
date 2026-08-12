@@ -163,8 +163,7 @@ pub extern "C" fn linuxdo_export_ca_der(
     out_len: *mut usize,
 ) -> *mut u8 {
     let result = catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<Vec<u8>> {
-        let home = cstr_to_string(home_dir)
-            .ok_or_else(|| anyhow::anyhow!("home_dir is null"))?;
+        let home = cstr_to_string(home_dir).ok_or_else(|| anyhow::anyhow!("home_dir is null"))?;
         unsafe { std::env::set_var("LINUXDO_IOS_HOME", &home) };
         let config: AppConfig = match cstr_to_string(config_toml) {
             Some(text) => toml::from_str(&text).unwrap_or_default(),
@@ -292,5 +291,5 @@ fn _keep_used() {
     let _ = start_inner
         as fn(Option<String>, String, Option<(String, String, String)>) -> Option<Box<ProxyHandle>>;
     let _ = cstr_to_string as fn(*const c_char) -> Option<String>;
-    let _ = set_last_error::<String>;
+    let _ = set_last_error as fn(String);
 }
